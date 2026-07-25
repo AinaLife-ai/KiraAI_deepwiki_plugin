@@ -1,0 +1,8 @@
+{
+  "display_name": "DeepWiki 助手",
+  "plugin_id": "deepwiki_plugin",
+  "version": "2.4.0",
+  "author": "znq19",
+  "description": "通过 DeepWiki MCP 查询 GitHub 仓库文档。支持多路搜索、/dw 命令（含@唤醒）、候选选择、失败自动重置、预设仓库重置保留、合并转发与可配置引导文案。",
+  "repo": "https://github.com/znq19/KiraAI_deepwiki_plugin"
+}

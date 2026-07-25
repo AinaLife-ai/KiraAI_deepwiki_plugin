@@ -1,0 +1,328 @@
+{
+  "section_connection": {
+    "type": "section",
+    "name": "MCP 连接与认证",
+    "collapsed": false,
+    "fields": {
+      "enabled": {
+        "name": "启用 DeepWiki 查询",
+        "type": "switch",
+        "default": true,
+        "hint": "是否启用 DeepWiki 相关工具（包括 LLM 工具和关键词命令）"
+      },
+      "mcp_url": {
+        "name": "MCP 端点地址",
+        "type": "string",
+        "default": "https://mcp.deepwiki.com/mcp",
+        "hint": "DeepWiki MCP 服务端点，通常不需要修改"
+      },
+      "protocol_version": {
+        "name": "MCP 协议版本",
+        "type": "string",
+        "default": "2025-11-25",
+        "hint": "MCP 协议版本头，需与服务器匹配"
+      },
+      "timeout": {
+        "name": "请求超时（秒）",
+        "type": "integer",
+        "default": 60,
+        "minimum": 5,
+        "hint": "单次 MCP 请求的最大等待时间"
+      },
+      "github_token": {
+        "name": "GitHub Token",
+        "type": "sensitive",
+        "default": "",
+        "hint": "可选，用于提高 GitHub 仓库搜索 API 限额（未认证 60次/小时，认证后 5000次/小时）"
+      }
+    }
+  },
+  "section_storage": {
+    "type": "section",
+    "name": "缓存与知识库",
+    "collapsed": true,
+    "fields": {
+      "cache_ttl": {
+        "name": "缓存有效期（秒）",
+        "type": "integer",
+        "default": 3600,
+        "minimum": 0,
+        "hint": "相同 (repo, question) 的 DeepWiki 回答缓存时间，0 表示不缓存"
+      },
+      "auto_save_to_kb": {
+        "name": "自动保存到知识库",
+        "type": "switch",
+        "default": false,
+        "hint": "是否将查询结果自动保存到 KiraKB（需 KiraKB 插件已启用）"
+      },
+      "target_kb_id": {
+        "name": "目标知识库 ID",
+        "type": "string",
+        "default": "deepwiki_cache",
+        "hint": "自动保存时使用的知识库 ID"
+      }
+    }
+  },
+  "section_search": {
+    "type": "section",
+    "name": "仓库搜索优化",
+    "collapsed": false,
+    "fields": {
+      "max_search_results": {
+        "name": "搜索候选数量",
+        "type": "integer",
+        "default": 5,
+        "minimum": 1,
+        "maximum": 20,
+        "hint": "多路搜索后最多返回的候选仓库数量（推荐 3-8）"
+      },
+      "use_multi_path_search": {
+        "type": "switch",
+        "name": "使用多路查询融合",
+        "default": true,
+        "hint": "同时进行名称精确匹配、描述/话题匹配、通用搜索等多路查询，合并去重后提供更精准的候选列表。强烈建议开启。"
+      },
+      "candidate_hint_text": {
+        "name": "候选列表额外提示（可选）",
+        "type": "json",
+        "default": {
+          "lines": []
+        },
+        "hint": "在「/dw 关键词」搜出候选仓库后，追加在内置「——怎么选——」后面的自定义提示。默认 {\"lines\":[]} 表示不追加（推荐）。需要时填 JSON，例如 {\"lines\":[\"提示：请发送 {cmd} 1 选择第一个\",\"当前搜索词：{keyword}\"]}。占位符 {cmd}=主命令词，{keyword}=本次关键词。不要填普通字符串，否则可能无法保存。"
+      }
+    }
+  },
+  "section_command_basic": {
+    "type": "section",
+    "name": "自定义命令-基础（/dw 直接触发）",
+    "collapsed": false,
+    "fields": {
+      "enable_command": {
+        "type": "switch",
+        "name": "启用命令控制",
+        "default": false,
+        "hint": "开启后，用户可直接发送 /dw 关键词 [问题] 进行查询，无需经过 LLM，完全隔离上下文。"
+      },
+      "command_words": {
+        "type": "list",
+        "name": "触发命令词列表",
+        "default": [
+          "/dw",
+          "dw:",
+          "/deepwiki"
+        ],
+        "hint": "用户输入任意一个命令词开头即可触发。每行一个，支持自定义，如 /wiki、dw 等。"
+      },
+      "default_question": {
+        "type": "string",
+        "name": "默认问题",
+        "default": "请总结这个仓库的核心功能、主要架构以及如何使用或贡献。",
+        "hint": "当用户只提供仓库/关键词而未指定问题时，使用此默认问题进行查询。"
+      }
+    }
+  },
+  "section_command_context": {
+    "type": "section",
+    "name": "自定义命令-上下文管理",
+    "collapsed": false,
+    "fields": {
+      "isolate_context_by_user": {
+        "type": "switch",
+        "name": "上下文按用户隔离",
+        "default": false,
+        "hint": "关闭（默认）：上下文按会话隔离（同一个群聊或私聊内共享同一个仓库上下文）。\n开启：上下文按真实用户ID隔离（即使在同一群聊中，每个人都有自己独立的 /dw 上下文记忆）。"
+      },
+      "default_repo_list": {
+        "type": "list",
+        "name": "默认初始仓库列表（每行一条）",
+        "default": [],
+        "hint": "为特定会话或用户预设初始仓库，预设后可直接 /dw <问题> 提问，无需搜索。格式：ctx;owner/repo\nctx 支持多种形式（命中任一即可）：\n• 完整 sid：qq:gm:123456789（适配器名:类型:ID）\n• 忽略适配器名：gm:123456789\n• 裸 ID：123456789\n• 用户专属：user:987654321\n适配器名写错也能按「类型:ID」匹配上。从上到下第一个命中生效。\n开启「上下文按用户隔离」时：user: 专属预设优先；没有专属预设的用户自动被所在会话的会话级预设接管。"
+      },
+      "reset_keeps_preset_repo": {
+        "type": "switch",
+        "name": "重置时保留预设仓库",
+        "default": true,
+        "hint": "开启（默认）：对配置了「默认初始仓库」的会话/用户，使用 /dw clear 等重置命令只清除对话记忆与候选列表，仍保持绑定预设仓库，可直接继续提问，不会回到搜索阶段。\n关闭：重置后彻底清空，预设仓库也会被解除（下一次使用命令时会重新应用预设）。"
+      },
+      "llm_bind_preset_repo": {
+        "type": "switch",
+        "name": "LLM 调用默认绑定预设仓库",
+        "default": false,
+        "hint": "默认关闭。开启后：用户不用 /dw 命令、直接自然语言提问（或 Bot 主动调用 DeepWiki 工具）时，LLM 会默认使用当前会话/用户绑定的仓库（预设或已选仓库），省去搜索选仓库环节；ask_deepwiki 的 repo 参数无效时也会用绑定仓库兜底，成功调用后记录为当前绑定（/dw clear 后仍按上方开关回到预设仓库）。"
+      },
+      "clear_command_words": {
+        "type": "list",
+        "name": "清除/重置上下文命令词",
+        "default": [
+          "clear",
+          "重置",
+          "清空",
+          "reset",
+          "清除",
+          "清除上下文",
+          "重置上下文"
+        ],
+        "hint": "用户在 /dw 后面输入这些词（或包含这些词）时，清除当前上下文记忆。\n支持自然语言，例如 /dw 清除当前上下文。\n每行一个，可自定义。"
+      },
+      "status_command_words": {
+        "type": "list",
+        "name": "查询当前上下文命令词",
+        "default": [
+          "?",
+          "？",
+          "status",
+          "ctx",
+          "context",
+          "当前",
+          "当前仓库"
+        ],
+        "hint": "用于查询当前记住的仓库上下文。\n例如 /dw ? 、 /dw status 、 /dw 当前。\n每行一个。"
+      }
+    }
+  },
+  "section_tool": {
+    "type": "section",
+    "name": "LLM 工具调用控制",
+    "collapsed": false,
+    "fields": {
+      "enable_llm_tool": {
+        "type": "switch",
+        "name": "允许自然语言调用（LLM 工具）",
+        "default": true,
+        "hint": "开启后，LLM 可以通过 search_deepwiki / ask_deepwiki 等工具进行自然语言查询。\n关闭后，仅支持通过 /dw 等命令词直接触发。"
+      }
+    }
+  },
+  "section_forward_basic": {
+    "type": "section",
+    "name": "合并转发-基础",
+    "collapsed": false,
+    "fields": {
+      "enable_auto_forward": {
+        "type": "switch",
+        "name": "启用自动合并转发",
+        "default": true,
+        "hint": "总开关。开启后，本插件直接产生的所有内容（答案、搜索候选、错误提示等）都会根据下方规则决定是否使用合并转发。"
+      },
+      "qq_rich_text_mode": {
+        "name": "QQ 文本样式模式",
+        "type": "enum",
+        "options": ["off", "sanitize", "stylize"],
+        "default": "sanitize",
+        "hint": "下拉选择：off=保留原始 Markdown；sanitize=去掉 ** * # 标记（推荐干净）；stylize=用美观强调代替 Markdown——**粗体**→【全角/中文】，*斜体*→「…」，英文用全角字母突出。合并转发与普通消息均按此模式处理（不再强制剥成无样式纯文本）。"
+      },
+      "force_forward_all": {
+        "type": "switch",
+        "name": "默认全部强制转发（忽略长度）",
+        "default": true,
+        "hint": "开启后（默认）：无视字符数，答案/候选/报错都用合并转发。关闭后：仅在开启「基于字符数判断」且超阈值时才转发。"
+      },
+      "use_length_threshold": {
+        "type": "switch",
+        "name": "启用基于字符数的转发判断",
+        "default": false,
+        "hint": "仅在「默认全部强制转发」关闭时有意义：开启后按「转发字符阈值」决定是否合并转发。"
+      },
+      "forward_threshold": {
+        "type": "integer",
+        "name": "转发字符阈值",
+        "default": 400,
+        "minimum": 50,
+        "hint": "仅在「启用基于字符数的转发判断」开关开启时生效。"
+      },
+      "forward_node_max_chars": {
+        "name": "合并转发单节点字数",
+        "type": "integer",
+        "default": 800,
+        "minimum": 400,
+        "maximum": 3500,
+        "hint": "长文拆成多条假消息放进同一个合并转发卡片。默认 800（更稳）。若仍报伪造转发失败，可再降到 500～600。"
+      },
+      "forward_api_timeout": {
+        "name": "合并转发 API 超时秒数",
+        "type": "integer",
+        "default": 60,
+        "minimum": 15,
+        "maximum": 180,
+        "hint": "调用 NapCat send_forward_msg 的等待超时。框架默认仅 10 秒，合并转发很容易误报超时（即使只有 1000 多字）。建议 45～90。"
+      }
+    }
+  },
+  "section_forward_card": {
+    "type": "section",
+    "name": "合并转发-卡片内容",
+    "collapsed": false,
+    "fields": {
+      "send_intro_message": {
+        "type": "switch",
+        "name": "发送引导语（卡片前单独消息）",
+        "default": false,
+        "hint": "开启后，合并转发卡片前会先发一条普通引导消息；关闭则仓库/问题信息只写在卡片内。"
+      },
+      "intro_template": {
+        "name": "引导语模板",
+        "type": "json",
+        "default": {
+          "lines": [
+            "DeepWiki 查询结果",
+            "仓库：{repo}",
+            "问题：{question}"
+          ]
+        },
+        "hint": "仅「发送引导语」开启时生效。必须填 JSON 对象，不要填纯字符串。推荐 {\"lines\":[\"DeepWiki 查询结果\",\"仓库：{repo}\",\"问题：{question}\"]}。占位符：{repo}、{question}。"
+      },
+      "prepend_metadata_in_card": {
+        "name": "在转发卡片内包含查询元数据",
+        "type": "switch",
+        "default": true,
+        "hint": "开启后，合并转发卡片开头会带上仓库名和问题，方便在卡片里看到上下文。"
+      },
+      "forward_metadata_template": {
+        "name": "卡片内元数据前缀模板",
+        "type": "json",
+        "default": {
+          "lines": [
+            "【DeepWiki 查询】",
+            "仓库：{repo}",
+            "问题：{question}",
+            ""
+          ]
+        },
+        "hint": "卡片开头的仓库/问题文案。必须 JSON 对象。推荐 {\"lines\":[\"【DeepWiki 查询】\",\"仓库：{repo}\",\"问题：{question}\",\"\"]}。占位符：{repo}、{question}。"
+      },
+      "append_operation_guide": {
+        "name": "在转发卡片末尾附加操作指南",
+        "type": "switch",
+        "default": true,
+        "hint": "开启后，DeepWiki 答案合并转发末尾会附加操作指南（自动带上你配置的命令前缀，如 /dw ?、/dw clear）。"
+      },
+      "operation_guide_text": {
+        "name": "操作指南自定义文本（可选）",
+        "type": "json",
+        "default": {
+          "lines": []
+        },
+        "hint": "自定义答案末尾操作指南，必须是 JSON 对象。默认 {\"lines\":[]} 表示用插件自动生成的完整指南。自定义示例：{\"lines\":[\"——操作指南——\",\"• /dw 1 （从候选列表中查询对应序号的仓库）\",\"• /dw clear （清除上下文，重新查询仓库来提问）\"]}。也可用 {\"content\":\"多行文字\"}。"
+      }
+    }
+  },
+  "section_forward_compat": {
+    "type": "section",
+    "name": "合并转发-失败降级与兼容",
+    "collapsed": false,
+    "fields": {
+      "enable_private_forward_fallback": {
+        "name": "私聊转发接口失败时改用通用转发",
+        "type": "switch",
+        "default": true,
+        "hint": "私聊优先 send_private_forward_msg；失败后是否再试 send_forward_msg。与下方「全文降级普通消息」无关。"
+      },
+      "enable_forward_plain_fallback": {
+        "name": "转发失败后降级为普通消息",
+        "type": "switch",
+        "default": false,
+        "hint": "默认关闭。合并转发失败时：会用合并转发卡片发送失败原因。仅当本开关开启时，才会再把全文拆成多条普通消息发出。"
+      }
+    }
+  }
+}
