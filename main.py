@@ -174,11 +174,37 @@ def is_empty_template(tmpl: Any) -> bool:
 # DeepWiki MCP 客户端（复用原有逻辑，稍作增强）
 # ============================================================
 
+class _RetryableError(Exception):
+    """标记可重试的瞬时故障（HTTP 429/5xx、网络抖动、服务端过载错误文本）。"""
+    pass
+
+
+# 瞬时 HTTP 状态码：重试有意义
+_TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504}
+
+
+# 服务端错误文本中的瞬时故障特征（如 "Server error '503 Service Temporarily Unavailable'..."）
+_TRANSIENT_TEXT_RE = re.compile(
+    r"(?<!\d)(?:50[0-4]|429)(?!\d)"
+    r"|temporarily unavailable|service unavailable|server error"
+    r"|bad gateway|overloaded|timed?\s*out|connection (?:reset|refused|closed)"
+    r"|error processing question",
+    re.IGNORECASE,
+)
+
+
+def _is_transient_text(text: str) -> bool:
+    """判断服务端返回文本是否属于瞬时故障（适合重试）。"""
+    return bool(_TRANSIENT_TEXT_RE.search(text or ""))
+
+
 class DeepWikiClient:
-    def __init__(self, mcp_url: str, protocol_version: str, timeout: float):
+    def __init__(self, mcp_url: str, protocol_version: str, timeout: float, max_retries: int = 3):
         self.mcp_url = mcp_url
         self.protocol_version = protocol_version
         self.timeout = timeout
+        # 瞬时故障（429/5xx/网络抖动/服务端过载）最大重试次数；退避 1s/2s/4s...
+        self.max_retries = max_retries
         self._client: Optional[httpx.AsyncClient] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -187,7 +213,12 @@ class DeepWikiClient:
         return self._client
 
     async def _call_mcp_tool(self, tool_name: str, arguments: dict) -> str:
-        """通用 MCP 工具调用，支持 ask_question / read_wiki_structure / read_wiki_contents"""
+        """通用 MCP 工具调用，支持 ask_question / read_wiki_structure / read_wiki_contents
+
+        对瞬时故障自动指数退避重试（最多 max_retries 次重试）：
+        HTTP 429/5xx、网络异常/超时、服务端错误文本（如 "Server error '503...'"）。
+        全部重试仍失败才返回错误串，上层（LLM 工具 / /dw 命令）完全无感。
+        """
         client = await self._get_client()
         headers = {
             "Content-Type": "application/json",
@@ -203,52 +234,89 @@ class DeepWikiClient:
                 "arguments": arguments,
             },
         }
-        try:
-            resp = await client.post(self.mcp_url, json=payload, headers=headers)
-            text = resp.text
-            if not text:
-                raise ValueError("Empty response from DeepWiki MCP")
+        last_err = "unknown error"
+        for attempt in range(self.max_retries + 1):
+            try:
+                resp = await client.post(self.mcp_url, json=payload, headers=headers)
+                # 瞬时 HTTP 状态码：直接重试
+                if resp.status_code in _TRANSIENT_HTTP_CODES:
+                    raise _RetryableError(f"HTTP {resp.status_code}")
+                text = resp.text
+                if not text:
+                    raise _RetryableError("Empty response from DeepWiki MCP")
 
-            full_answer = []
-            for line in text.splitlines():
-                line = line.strip()
-                if line.startswith("data: "):
-                    json_str = line[6:]
-                    try:
-                        data = json.loads(json_str)
-                        if "result" in data and "content" in data["result"]:
-                            content = data["result"]["content"]
-                            if isinstance(content, list) and len(content) > 0:
-                                full_answer.append(content[0].get("text", ""))
-                            elif isinstance(content, dict):
-                                full_answer.append(content.get("text", ""))
-                        elif "error" in data:
-                            return f"MCP error: {data['error'].get('message', 'Unknown')}"
-                    except json.JSONDecodeError:
-                        continue
+                full_answer = []
+                for line in text.splitlines():
+                    line = line.strip()
+                    if line.startswith("data: "):
+                        json_str = line[6:]
+                        try:
+                            data = json.loads(json_str)
+                            if "result" in data and "content" in data["result"]:
+                                content = data["result"]["content"]
+                                if isinstance(content, list) and len(content) > 0:
+                                    full_answer.append(content[0].get("text", ""))
+                                elif isinstance(content, dict):
+                                    full_answer.append(content.get("text", ""))
+                            elif "error" in data:
+                                msg = f"MCP error: {data['error'].get('message', 'Unknown')}"
+                                if _is_transient_text(msg):
+                                    raise _RetryableError(msg)
+                                return msg
+                        except json.JSONDecodeError:
+                            continue
 
-            if full_answer:
-                return "\n".join(full_answer)
+                if full_answer:
+                    answer = "\n".join(full_answer)
+                    # 服务端把上游错误当正常文本返回（如 "Error processing question: Server error '503...'"）
+                    if _is_transient_text(answer):
+                        raise _RetryableError(answer)
+                    return answer
 
-            # fallback: 直接 JSON
-            data = json.loads(text)
-            if "result" in data and "content" in data["result"]:
-                content = data["result"]["content"]
-                if isinstance(content, list) and len(content) > 0:
-                    return content[0].get("text", "")
-                elif isinstance(content, dict):
-                    return content.get("text", "")
-            elif "error" in data:
-                return f"MCP error: {data['error'].get('message', 'Unknown')}"
-            else:
-                return f"Unexpected response: {str(data)[:200]}"
+                # fallback: 直接 JSON
+                data = json.loads(text)
+                if "result" in data and "content" in data["result"]:
+                    content = data["result"]["content"]
+                    if isinstance(content, list) and len(content) > 0:
+                        answer = content[0].get("text", "")
+                        if _is_transient_text(answer):
+                            raise _RetryableError(answer)
+                        return answer
+                    elif isinstance(content, dict):
+                        answer = content.get("text", "")
+                        if _is_transient_text(answer):
+                            raise _RetryableError(answer)
+                        return answer
+                elif "error" in data:
+                    msg = f"MCP error: {data['error'].get('message', 'Unknown')}"
+                    if _is_transient_text(msg):
+                        raise _RetryableError(msg)
+                    return msg
+                else:
+                    return f"Unexpected response: {str(data)[:200]}"
 
-        except httpx.HTTPStatusError as e:
-            logger.error(f"DeepWiki MCP HTTP error: {e.response.status_code} - {e.response.text[:200]}")
-            return f"DeepWiki request failed (HTTP {e.response.status_code})"
-        except Exception as e:
-            logger.error(f"DeepWiki MCP call failed: {e}")
-            return f"DeepWiki request failed: {str(e)}"
+            except _RetryableError as e:
+                last_err = str(e)
+                if attempt >= self.max_retries:
+                    break
+                logger.warning(
+                    f"DeepWiki MCP transient error (attempt {attempt + 1}/{self.max_retries + 1}): {e}"
+                )
+                await asyncio.sleep(2 ** attempt)
+            except (httpx.HTTPStatusError, httpx.TransportError, httpx.TimeoutException, asyncio.TimeoutError) as e:
+                last_err = str(e)
+                if attempt >= self.max_retries:
+                    break
+                logger.warning(
+                    f"DeepWiki MCP network error (attempt {attempt + 1}/{self.max_retries + 1}): {e}"
+                )
+                await asyncio.sleep(2 ** attempt)
+            except Exception as e:
+                logger.error(f"DeepWiki MCP call failed: {e}")
+                return f"DeepWiki request failed: {str(e)}"
+
+        logger.error(f"DeepWiki MCP call failed after {self.max_retries + 1} attempts: {last_err}")
+        return f"DeepWiki request failed: {last_err}"
 
     async def ask_question(self, repo: str, question: str) -> str:
         return await self._call_mcp_tool(
@@ -789,8 +857,18 @@ class DeepWikiPlugin(BasePlugin):
             "mcp error",
             "deepwiki request failed",
             "empty response",
+            # 服务端错误文本（含瞬时故障），防止被当正常回答发出/缓存
+            "error processing question",
+            "server error",
+            "temporarily unavailable",
+            "service unavailable",
+            "bad gateway",
+            "overloaded",
         )
         if any(m in low for m in markers):
+            return True
+        # HTTP 5xx / 429 状态码数字（前后非数字，避免误伤回答正文）
+        if re.search(r"(?<!\d)(?:50[0-4]|429)(?!\d)", low):
             return True
         # 常见失败组合
         if "error" in low and ("failed" in low or "not found" in low):
